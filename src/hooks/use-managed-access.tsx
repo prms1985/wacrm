@@ -5,10 +5,11 @@ import {
   useEffect,
   useState,
   useCallback,
+  useRef,
 } from 'react';
 import { useAuth } from './use-auth';
 import type { ManagedAccountData } from '@/lib/managed/types';
-import type { ManagedCapability } from '@/lib/managed/catalog';
+export { canOpenManagedPath } from '@/lib/managed/navigation';
 
 const Context = createContext<{
   data: ManagedAccountData | null;
@@ -28,34 +29,48 @@ export function ManagedAccessProvider({
 }: {
   children: React.ReactNode;
 }) {
-  const { accountId } = useAuth();
+  const { user, accountId, accountRole, profileLoading } = useAuth();
+  const sessionKey =
+    user && accountId ? `${user.id}:${accountId}:${accountRole}` : null;
+  const request = useRef<AbortController | null>(null);
   const [state, setState] = useState<{
-    accountId: string | null;
+    sessionKey: string | null;
     data: ManagedAccountData | null;
     error: string | null;
     errorCode: string | null;
-  }>({ accountId: null, data: null, error: null, errorCode: null });
-  const [loading, setLoading] = useState(true);
+  }>({ sessionKey: null, data: null, error: null, errorCode: null });
   const refresh = useCallback(async () => {
-    if (!accountId) return;
+    if (!sessionKey || !user || !accountId) return;
+    request.current?.abort();
+    const controller = new AbortController();
+    request.current = controller;
     try {
       const response = await fetch('/api/managed/account', {
         cache: 'no-store',
+        signal: controller.signal,
       });
       const body = await response.json();
+      if (controller.signal.aborted) return;
       if (!response.ok) {
         setState({
-          accountId,
+          sessionKey,
           data: null,
           error: body.error || 'Subscription access could not be loaded',
           errorCode: typeof body.code === 'string' ? body.code : null,
         });
         return;
       }
-      setState({ accountId, data: body, error: null, errorCode: null });
+      if (
+        body.userId !== user.id ||
+        body.account?.id !== accountId ||
+        body.role !== accountRole
+      )
+        throw new Error('Your login changed. Refresh to verify access.');
+      setState({ sessionKey, data: body, error: null, errorCode: null });
     } catch (error) {
+      if (controller.signal.aborted) return;
       setState({
-        accountId,
+        sessionKey,
         data: null,
         error:
           error instanceof Error
@@ -63,17 +78,25 @@ export function ManagedAccessProvider({
             : 'Could not load subscription',
         errorCode: 'service_unavailable',
       });
-    } finally {
-      setLoading(false);
     }
-  }, [accountId]);
+  }, [sessionKey, user, accountId, accountRole]);
   useEffect(() => {
-    setLoading(true);
     void refresh();
+    // Activation, suspension and platform-role changes also reach open tabs.
+    const revalidate = () => {
+      if (document.visibilityState === 'visible') void refresh();
+    };
+    window.addEventListener('focus', revalidate);
+    const timer = window.setInterval(revalidate, 60_000);
+    return () => {
+      request.current?.abort();
+      window.removeEventListener('focus', revalidate);
+      window.clearInterval(timer);
+    };
   }, [refresh]);
-  // Old account data is never exposed during an invitation/account switch.
+  // A different user or role in the same workspace must also revalidate.
   const current =
-    state.accountId === accountId
+    state.sessionKey === sessionKey && sessionKey !== null
       ? state
       : { data: null, error: null, errorCode: null };
   return (
@@ -82,7 +105,8 @@ export function ManagedAccessProvider({
         data: current.data,
         error: current.error,
         errorCode: current.errorCode,
-        loading: loading || state.accountId !== accountId,
+        loading:
+          profileLoading || (!!sessionKey && state.sessionKey !== sessionKey),
         refresh,
       }}
     >
@@ -92,22 +116,4 @@ export function ManagedAccessProvider({
 }
 export function useManagedAccess() {
   return useContext(Context);
-}
-export function canOpenManagedPath(
-  path: string,
-  data: ManagedAccountData | null
-) {
-  if (path.startsWith('/admin')) return data?.platformAdmin === true;
-  if (!data?.subscription) return true;
-  if (data.platformAdmin) return true;
-  const protectedPaths: Record<string, ManagedCapability> = {
-    '/automations': 'automation.manage',
-    '/flows': 'automation.manage',
-    '/agents': 'ai.configure',
-    '/broadcasts': 'broadcast.send',
-  };
-  const match = Object.entries(protectedPaths).find(
-    ([prefix]) => path === prefix || path.startsWith(prefix + '/')
-  );
-  return !match || data.capabilities?.[match[1]] === true;
 }

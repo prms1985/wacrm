@@ -1,5 +1,6 @@
 'use client';
 import { useState } from 'react';
+import Link from 'next/link';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { useManagedAccess } from '@/hooks/use-managed-access';
@@ -26,6 +27,21 @@ export default function SubscriptionPage() {
         message={error ?? 'Could not load your service plan'}
         retry={refresh}
       />
+    );
+  if (data.platformAdmin)
+    return (
+      <Panel title="Platform administration">
+        <p>
+          Manage client onboarding, subscription plans, payments, WhatsApp
+          connections and AI agents from your admin portal.
+        </p>
+        <Link
+          href="/admin/clients"
+          className="text-primary mt-4 inline-block font-medium underline"
+        >
+          Open admin portal
+        </Link>
+      </Panel>
     );
   if (!data.subscription)
     return (

@@ -37,7 +37,8 @@ are kept out of browser responses.
    Use your actual administrator email. Confirm that exactly one intended user
    matched. Workspace ownership does not grant platform administration.
 
-4. Sign in and open `/admin/clients`. Existing accounts remain standalone. Enroll
+4. Sign in and open `/admin/clients` using the prominent **Admin portal** sidebar
+   link. Platform administrators land here after login. Existing accounts remain standalone. Enroll
    a test workspace or enable **Require approval for new clients**. New accounts
    created after that setting is enabled receive a pending subscription.
 5. Review the seeded Launch/Growth prices and allowances before selling them.
@@ -94,6 +95,15 @@ can use existing scoped API keys only after the operator enables `api.access`.
 Client integration credentials should be provisioned by the operator, kept on the
 integration server and revoked through trusted administration when no longer used.
 
+Pending, expired, suspended and cancelled clients land on Plan & onboarding.
+Their navigation exposes onboarding and personal settings; operational pages
+remain closed until activation. Active clients see permitted features and settings.
+Direct configuration/API requests still enforce the server and database rules.
+Permission lookup failures keep feature content closed and offer retry controls.
+Access data is bound to the user, workspace and role, with outstanding requests
+cancelled on identity changes. Open tabs recheck permissions on focus and once
+per visible minute, so activation and suspension appear without signing out.
+
 Seat limits are checked in the database on membership changes. AI generations
 and outbound attempts reserve allowance atomically before external calls. AI
 extraction can use more than one generation per customer message. Message phone
@@ -139,5 +149,34 @@ work; the existing webhook `after()` dispatcher is still best-effort.
 - Local production HTTP checks returned redirects to login for `/admin/clients`
   and `/subscription`, and 401 for the new private APIs. The owned smoke-test
   server was stopped afterward.
-- No production database migrations or Meta sends were executed. Authenticated
-  visual verification and live Meta onboarding remain staging checks.
+- Authenticated visual verification and live Meta onboarding remain staging
+  checks. Database deployment and access verification are recorded below.
+
+## Database migration applied
+
+On 2026-11-03, the linked Supabase project matching this application's
+configuration was updated through the authenticated Supabase CLI. Applied
+migrations: 055, 057, 058, 065, 066, 067 and 068. All seven versions were
+verified in the remote migration history. The managed-service tables and
+required metadata columns were checked through both SQL and the Data API.
+Browser SELECT privileges on WhatsApp/AI credential tables are revoked.
+
+No duplicate templates or invalid assignments needed cleanup during the
+preflight.
+
+## Administrator and registration activated
+
+On 2026-11-03, the original parameswaran login was explicitly assigned the separate
+platform administrator role at the owner's request. Managed registration was
+enabled, and the empty Sundaram and older `param` workspaces were enrolled in the
+Launch distributor package with pending status. These operations were recorded
+in the platform audit log. The original administrator workspace retains its
+existing CRM connection and data. There is one platform administrator and two
+pending clients.
+
+Verification under the database's authenticated role confirmed that parameswaran
+can see all three current workspaces and configure Sundaram's AI, WhatsApp and
+workflows. Sundaram sees only its own workspace and cannot configure AI, WhatsApp
+or workflows, or send replies while pending. New deployments still require the
+explicit bootstrap and enrollment steps above; there is no automatic promotion
+of workspace owners.

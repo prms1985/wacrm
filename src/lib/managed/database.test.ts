@@ -269,6 +269,23 @@ describe('managed subscriptions database boundaries', () => {
       [account]
     );
     expect(result.rows[0].status).toBe('pending');
+    await db.query('UPDATE profiles SET account_id=$1 WHERE user_id=$2', [
+      account,
+      owner,
+    ]);
+    await user();
+    const permissions = await db.query<{ allowed: boolean }>(
+      "SELECT managed_user_can($1,capability) AS allowed FROM unnest(ARRAY['inbox.reply','contacts.write','ai.configure','whatsapp.manage','automation.manage','api.manage']) capability",
+      [account]
+    );
+    expect(permissions.rows).toHaveLength(6);
+    expect(permissions.rows.every((row) => row.allowed === false)).toBe(true);
+    await expect(
+      db.query(
+        "INSERT INTO contacts(account_id,name) VALUES($1,'Not activated')",
+        [account]
+      )
+    ).rejects.toThrow(/subscription|row-level security/);
   });
   it('keeps draft changes separate and rejects stale publication', async () => {
     await db.query(

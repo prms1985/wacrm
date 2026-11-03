@@ -34,6 +34,7 @@ import {
   Zap,
 } from 'lucide-react';
 import type { AccountRole } from '@/lib/auth/roles';
+import { managedLandingPath } from '@/lib/managed/navigation';
 
 // Per-role chip metadata used in the sidebar's account strip + the
 // Members tab roster. Keeping this near both consumers in a single
@@ -188,7 +189,11 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
             close button is hidden since the sidebar is always-visible. */}
         <div className="border-border flex h-14 shrink-0 items-center justify-between gap-2 border-b px-4">
           <Link
-            href="/dashboard"
+            href={
+              managedAccess
+                ? managedLandingPath(managedAccess)
+                : '/subscription'
+            }
             aria-label={t('title')}
             className="flex items-center"
           >
@@ -206,8 +211,27 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
 
         {/* Main navigation */}
         <nav className="flex-1 overflow-y-auto px-3 py-4">
+          {managedAccess?.platformAdmin && (
+            <Link
+              href="/admin/clients"
+              aria-current={pathname.startsWith('/admin') ? 'page' : undefined}
+              className={cn(
+                'border-primary/30 text-primary mb-3 flex items-center gap-3 rounded-lg border px-3 py-3 text-sm font-semibold',
+                pathname.startsWith('/admin')
+                  ? 'bg-primary/10'
+                  : 'hover:bg-muted'
+              )}
+            >
+              <UsersRound className="h-4 w-4" />
+              Admin portal
+            </Link>
+          )}
           <ul className="flex flex-col gap-1">
             {navItems
+              .filter(
+                (item) =>
+                  !(managedAccess?.platformAdmin && item.href === '/dashboard')
+              )
               .filter((item) => canOpenManagedPath(item.href, managedAccess))
               .map((item) => {
                 const isActive =
@@ -278,42 +302,39 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
 
           <Link
             href="/subscription"
-            className="hover:bg-muted mt-3 flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium"
+            aria-current={pathname === '/subscription' ? 'page' : undefined}
+            className={cn(
+              'hover:bg-muted mt-3 flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium',
+              pathname === '/subscription' && 'bg-primary/10 text-primary'
+            )}
           >
             <Shield className="h-4 w-4" />
             Plan & onboarding
           </Link>
-          {managedAccess?.platformAdmin && (
-            <Link
-              href="/admin/clients"
-              className="text-primary hover:bg-muted mt-1 flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium"
-            >
-              <UsersRound className="h-4 w-4" />
-              Client administration
-            </Link>
-          )}
           <div className="border-border my-4 border-t" />
 
           <ul className="flex flex-col gap-1">
-            {bottomNavItems.map((item) => {
-              const isActive = pathname.startsWith(item.href);
-              return (
-                <li key={item.href}>
-                  <Link
-                    href={item.href}
-                    className={cn(
-                      'flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors lg:py-2',
-                      isActive
-                        ? 'bg-primary/10 text-primary'
-                        : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-                    )}
-                  >
-                    <item.icon className="h-4 w-4" />
-                    {t(item.labelKey as string)}
-                  </Link>
-                </li>
-              );
-            })}
+            {bottomNavItems
+              .filter((item) => canOpenManagedPath(item.href, managedAccess))
+              .map((item) => {
+                const isActive = pathname.startsWith(item.href);
+                return (
+                  <li key={item.href}>
+                    <Link
+                      href={item.href}
+                      className={cn(
+                        'flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors lg:py-2',
+                        isActive
+                          ? 'bg-primary/10 text-primary'
+                          : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                      )}
+                    >
+                      <item.icon className="h-4 w-4" />
+                      {t(item.labelKey as string)}
+                    </Link>
+                  </li>
+                );
+              })}
           </ul>
         </nav>
 
@@ -399,7 +420,7 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
               <DropdownMenuItem
                 render={
                   <Link
-                    href="/settings?tab=whatsapp"
+                    href="/settings"
                     onClick={onClose}
                     className="text-popover-foreground focus:bg-accent focus:text-accent-foreground"
                   />

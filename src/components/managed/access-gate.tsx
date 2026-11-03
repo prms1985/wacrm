@@ -1,29 +1,56 @@
 'use client';
-import { subscriptionDisplayStatus } from '@/lib/managed/catalog';
+import { useEffect } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import {
-  useManagedAccess,
-  canOpenManagedPath,
-} from '@/hooks/use-managed-access';
+import { usePathname, useRouter } from 'next/navigation';
+import { useManagedAccess } from '@/hooks/use-managed-access';
+import { canOpenManagedPath, managedRedirect } from '@/lib/managed/navigation';
+
 export function ManagedAccessGate({ children }: { children: React.ReactNode }) {
   const path = usePathname();
-  const { data, loading, error } = useManagedAccess();
-  if (
-    loading &&
-    ['/admin', '/automations', '/flows', '/agents', '/broadcasts'].some(
-      (prefix) => path.startsWith(prefix)
-    )
-  )
-    return <p role="status">Checking service access…</p>;
-  if (
-    (path.startsWith('/admin') || data?.subscription) &&
-    !canOpenManagedPath(path, data)
-  )
+  const router = useRouter();
+  const { data, loading, error, refresh } = useManagedAccess();
+  const redirect = loading ? null : managedRedirect(path, data);
+  useEffect(() => {
+    if (redirect) router.replace(redirect);
+  }, [redirect, router]);
+
+  if (loading) return <p role="status">Checking service access…</p>;
+  // The subscription screen contains detailed setup errors and retry controls.
+  if (path === '/subscription') return children;
+  if (error || !data)
+    return (
+      <div className="bg-card rounded-xl border p-6" role="alert">
+        <h1 className="text-xl font-semibold">
+          Service access could not be verified
+        </h1>
+        <p className="text-muted-foreground mt-2">
+          Refresh access or open your service plan for setup details.
+        </p>
+        <button
+          type="button"
+          onClick={() => void refresh()}
+          className="text-primary mt-4 mr-4 underline"
+        >
+          Retry access check
+        </button>
+        <Link href="/subscription" className="text-primary underline">
+          Open your service plan
+        </Link>
+      </div>
+    );
+  if (redirect)
+    return (
+      <p role="status">
+        Opening your {data.platformAdmin ? 'admin portal' : 'onboarding'}…
+      </p>
+    );
+  if (!canOpenManagedPath(path, data))
     return (
       <div className="bg-card rounded-xl border p-6">
         <h1 className="text-xl font-semibold">
-          This feature is managed by your service team
+          {path === '/admin' || path.startsWith('/admin/')
+            ? 'Platform administrator access required'
+            : 'This feature is managed by your service team'}
         </h1>
         <p className="text-muted-foreground mt-2">
           View your package and contact your administrator to discuss changes.
@@ -33,33 +60,5 @@ export function ManagedAccessGate({ children }: { children: React.ReactNode }) {
         </Link>
       </div>
     );
-  return (
-    <>
-      {error && !path.startsWith('/subscription') && (
-        <p
-          role="alert"
-          className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm"
-        >
-          Service access could not be verified.{' '}
-          <Link href="/subscription" className="underline">
-            View setup details or retry
-          </Link>
-          .
-        </p>
-      )}
-      {data?.subscription &&
-        subscriptionDisplayStatus(data.subscription) !== 'active' &&
-        !path.startsWith('/subscription') &&
-        !path.startsWith('/admin') && (
-          <p className="bg-card mb-4 rounded-lg border p-3 text-sm">
-            Your service is {subscriptionDisplayStatus(data.subscription)}.{' '}
-            <Link href="/subscription" className="text-primary">
-              View onboarding and subscription details
-            </Link>
-            .
-          </p>
-        )}
-      {children}
-    </>
-  );
+  return children;
 }

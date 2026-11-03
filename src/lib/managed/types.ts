@@ -36,6 +36,7 @@ export interface BusinessProfile {
   updated_at?: string;
 }
 export interface ManagedAccountData {
+  userId?: string;
   knowledge?: { id: string; title: string; updated_at: string }[];
   account: { id: string; name: string };
   role?: string;

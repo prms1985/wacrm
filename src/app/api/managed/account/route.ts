@@ -25,6 +25,7 @@ export async function GET() {
       {
         ...snapshot,
         account: ctx.account,
+        userId: ctx.userId,
         role: ctx.role,
         platformAdmin: platform.data === true,
         capabilities: permissions.data,
