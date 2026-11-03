@@ -1,0 +1,427 @@
+BEGIN;
+-- Managed subscriptions are opt-in for existing accounts. Credential tables
+-- become server-only for ALL accounts; deploy the accompanying server changes.
+CREATE TABLE public.platform_users (
+  user_id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  enabled boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE public.platform_users ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.platform_users FROM anon, authenticated;
+GRANT ALL ON public.platform_users TO service_role;
+
+CREATE OR REPLACE FUNCTION public.is_platform_admin() RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
+  SELECT EXISTS (SELECT 1 FROM platform_users WHERE user_id = auth.uid() AND enabled);
+$$;
+REVOKE ALL ON FUNCTION public.is_platform_admin() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.is_platform_admin() TO authenticated, service_role;
+
+CREATE TABLE public.managed_platform_settings (
+  id boolean PRIMARY KEY DEFAULT true CHECK (id),
+  managed_signup boolean NOT NULL DEFAULT false
+);
+INSERT INTO public.managed_platform_settings(id) VALUES(true);
+ALTER TABLE public.managed_platform_settings ENABLE ROW LEVEL SECURITY;
+CREATE POLICY platform_settings_admin ON public.managed_platform_settings FOR ALL
+  USING (is_platform_admin()) WITH CHECK (is_platform_admin());
+
+CREATE TABLE public.industry_packages (
+  id text PRIMARY KEY,
+  name text NOT NULL,
+  description text NOT NULL,
+  system_prompt text NOT NULL,
+  workflow_steps text[] NOT NULL,
+  version integer NOT NULL DEFAULT 1
+);
+INSERT INTO public.industry_packages(id,name,description,system_prompt,workflow_steps) VALUES (
+  'distributor-sales', 'Distributor sales automation',
+  'Customer enquiries, catalogue answers and quotation intake with staff approval.',
+  'You are the sales receptionist for this distributor. Collect the customer name, company, catalogue items, quantities and delivery location. Ask for missing details one at a time. Use approved knowledge. Never invent prices, stock, discounts, delivery dates or payment confirmations. Prepare quotation requests for staff approval, never approve or send quotations yourself. Transfer complaints, exceptions and requests for a person to staff. Respect opt-outs. Keep replies concise and use the customer language.',
+  ARRAY['Receive enquiry','Collect requirements','Answer from approved knowledge','Prepare quotation draft','Staff approval and delivery','Staff follow-up']
+);
+ALTER TABLE public.industry_packages ENABLE ROW LEVEL SECURITY;
+CREATE POLICY packages_read ON public.industry_packages FOR SELECT TO authenticated USING(true);
+
+CREATE TABLE public.subscription_plans (
+  id text PRIMARY KEY,
+  name text NOT NULL,
+  currency text NOT NULL DEFAULT 'INR' CHECK (currency ~ '^[A-Z]{3}$'),
+  monthly_price_minor bigint NOT NULL CHECK (monthly_price_minor >= 0),
+  setup_price_minor bigint NOT NULL CHECK (setup_price_minor >= 0),
+  seat_limit integer NOT NULL CHECK (seat_limit BETWEEN 1 AND 10000),
+  ai_generation_limit integer NOT NULL CHECK (ai_generation_limit >= 0),
+  outbound_attempt_limit integer NOT NULL CHECK (outbound_attempt_limit >= 0),
+  capabilities text[] NOT NULL,
+  is_active boolean NOT NULL DEFAULT true
+);
+INSERT INTO public.subscription_plans VALUES
+ ('launch','Launch','INR',1000000,2500000,3,2000,5000,ARRAY['inbox.reply','contacts.write','ai.use','quotation.manage'],true),
+ ('growth','Growth','INR',2000000,4000000,10,6000,15000,ARRAY['inbox.reply','contacts.write','ai.use','quotation.manage','broadcast.send','catalogue.manage','members.manage'],true);
+ALTER TABLE public.subscription_plans ENABLE ROW LEVEL SECURITY;
+CREATE POLICY plans_read ON public.subscription_plans FOR SELECT TO authenticated USING(true);
+
+CREATE TABLE public.managed_subscriptions (
+  account_id uuid PRIMARY KEY REFERENCES public.accounts(id) ON DELETE CASCADE,
+  plan_id text NOT NULL REFERENCES public.subscription_plans(id),
+  industry_id text NOT NULL REFERENCES public.industry_packages(id),
+  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','active','past_due','suspended','cancelled')),
+  period_start timestamptz NOT NULL DEFAULT date_trunc('month',now()),
+  period_end timestamptz NOT NULL DEFAULT date_trunc('month',now()) + interval '1 month',
+  extra_capabilities text[] NOT NULL DEFAULT '{}',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (period_end > period_start)
+);
+CREATE TABLE public.managed_business_profiles (
+  account_id uuid PRIMARY KEY REFERENCES public.accounts(id) ON DELETE CASCADE,
+  business_name text NOT NULL DEFAULT '',
+  description text NOT NULL DEFAULT '',
+  support_contact text NOT NULL DEFAULT '',
+  operating_hours text NOT NULL DEFAULT '',
+  onboarding_complete boolean NOT NULL DEFAULT false,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (length(business_name)<=200 AND length(description)<=5000 AND length(support_contact)<=300 AND length(operating_hours)<=500)
+);
+CREATE TABLE public.managed_usage (
+  account_id uuid NOT NULL REFERENCES public.accounts(id) ON DELETE CASCADE,
+  period_start timestamptz NOT NULL,
+  metric text NOT NULL CHECK (metric IN ('ai_generations','outbound_attempts')),
+  used bigint NOT NULL DEFAULT 0 CHECK (used >= 0),
+  PRIMARY KEY(account_id,period_start,metric)
+);
+CREATE TABLE public.managed_payments (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id uuid NOT NULL REFERENCES public.accounts(id) ON DELETE CASCADE,
+  reference text NOT NULL CHECK (length(reference) BETWEEN 1 AND 150),
+  amount_minor bigint NOT NULL CHECK (amount_minor > 0),
+  currency text NOT NULL CHECK(currency ~ '^[A-Z]{3}$'),
+  paid_at timestamptz NOT NULL DEFAULT now(),
+  recorded_by uuid REFERENCES auth.users(id) ON DELETE SET NULL,
+  UNIQUE(account_id,reference)
+);
+CREATE TABLE public.platform_audit_log (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id uuid REFERENCES public.accounts(id) ON DELETE SET NULL,
+  actor_id uuid REFERENCES auth.users(id) ON DELETE SET NULL,
+  action text NOT NULL,
+  details jsonb NOT NULL DEFAULT '{}',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX managed_audit_account_time ON public.platform_audit_log(account_id,created_at DESC);
+CREATE TABLE public.managed_ai_drafts (
+  account_id uuid PRIMARY KEY REFERENCES public.accounts(id) ON DELETE CASCADE,
+  system_prompt text NOT NULL DEFAULT '',
+  auto_reply_enabled boolean NOT NULL DEFAULT false,
+  reply_limit integer NOT NULL DEFAULT 5 CHECK(reply_limit BETWEEN 1 AND 20),
+  version integer NOT NULL DEFAULT 1,
+  published_version integer,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CHECK(length(system_prompt)<=30000)
+);
+
+DO $$ DECLARE t text; BEGIN
+  FOREACH t IN ARRAY ARRAY['managed_subscriptions','managed_business_profiles','managed_usage','managed_payments','platform_audit_log','managed_ai_drafts'] LOOP
+    EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY',t);
+    EXECUTE format('CREATE POLICY managed_admin_read ON public.%I FOR SELECT TO authenticated USING (is_platform_admin())',t);
+    EXECUTE format('GRANT ALL ON public.%I TO service_role',t);
+  END LOOP;
+END $$;
+CREATE POLICY subscription_member_read ON public.managed_subscriptions FOR SELECT TO authenticated USING(is_account_member(account_id));
+CREATE POLICY business_member_read ON public.managed_business_profiles FOR SELECT TO authenticated USING(is_account_member(account_id));
+CREATE POLICY usage_member_read ON public.managed_usage FOR SELECT TO authenticated USING(is_account_member(account_id));
+CREATE POLICY payments_member_read ON public.managed_payments FOR SELECT TO authenticated USING(is_account_member(account_id));
+-- All mutations use validated RPCs. Authenticated clients never write entitlements.
+GRANT SELECT ON public.managed_subscriptions,public.managed_business_profiles,public.managed_usage,public.managed_payments,public.platform_audit_log,public.managed_ai_drafts,public.subscription_plans,public.industry_packages,public.managed_platform_settings TO authenticated;
+GRANT SELECT,UPDATE ON public.managed_platform_settings TO authenticated;
+GRANT ALL ON public.subscription_plans,public.industry_packages,public.managed_platform_settings TO service_role;
+CREATE POLICY platform_accounts_read ON public.accounts FOR SELECT TO authenticated USING(is_platform_admin());
+
+-- This helper adds restrictions; it never grants membership or replaces existing
+-- resource/role policies. Background code calls the same helper through RPC.
+CREATE OR REPLACE FUNCTION public.managed_account_allows(p_account_id uuid,p_capability text) RETURNS boolean
+LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public AS $$
+DECLARE s managed_subscriptions; caps text[];
+BEGIN
+  SELECT * INTO s FROM managed_subscriptions WHERE account_id=p_account_id;
+  IF NOT FOUND THEN RETURN true; END IF;
+  IF p_capability IN ('ai.configure','whatsapp.manage','api.manage','automation.manage') THEN RETURN false; END IF;
+  IF s.status<>'active' OR now()<s.period_start OR now()>=s.period_end THEN RETURN false; END IF;
+  SELECT capabilities INTO caps FROM subscription_plans WHERE id=s.plan_id AND is_active;
+  RETURN COALESCE(p_capability=ANY(caps || s.extra_capabilities),false);
+END $$;
+REVOKE ALL ON FUNCTION public.managed_account_allows(uuid,text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.managed_account_allows(uuid,text) TO authenticated,service_role;
+
+CREATE OR REPLACE FUNCTION public.managed_user_can(p_account_id uuid,p_capability text) RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=public AS $$
+  SELECT is_platform_admin() OR (is_account_member(p_account_id,
+    CASE WHEN p_capability IN ('inbox.reply','contacts.write','broadcast.send','ai.use','quotation.manage','automation.manage') THEN 'agent'::account_role_enum ELSE 'admin'::account_role_enum END
+  ) AND managed_account_allows(p_account_id,p_capability));
+$$;
+REVOKE ALL ON FUNCTION public.managed_user_can(uuid,text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.managed_user_can(uuid,text) TO authenticated;
+
+CREATE OR REPLACE FUNCTION public.managed_permissions(p_account_id uuid) RETURNS jsonb
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=public AS $$
+  SELECT jsonb_object_agg(cap,managed_user_can(p_account_id,cap)) FROM unnest(ARRAY[
+    'inbox.reply','contacts.write','broadcast.send','automation.manage','ai.use','ai.configure',
+    'whatsapp.manage','api.manage','api.access','members.manage','catalogue.manage','quotation.manage'
+  ]) cap;
+$$;
+REVOKE ALL ON FUNCTION public.managed_permissions(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.managed_permissions(uuid) TO authenticated;
+
+CREATE OR REPLACE FUNCTION public.managed_runtime_allows(p_account_id uuid,p_capability text) RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path=public AS $$
+  SELECT managed_account_allows(p_account_id,p_capability);
+$$;
+REVOKE ALL ON FUNCTION public.managed_runtime_allows(uuid,text) FROM PUBLIC,anon,authenticated;
+GRANT EXECUTE ON FUNCTION public.managed_runtime_allows(uuid,text) TO service_role;
+
+-- Credential-bearing tables have no browser access, including encrypted values.
+REVOKE ALL ON public.whatsapp_config, public.ai_configs FROM anon,authenticated;
+GRANT ALL ON public.whatsapp_config,public.ai_configs TO service_role;
+
+-- Restrictive policies combine with existing membership/role policies.
+DO $$ DECLARE item text[]; t text; cap text; BEGIN
+  FOREACH item SLICE 1 IN ARRAY ARRAY[
+    ['contacts','contacts.write'],['conversations','inbox.reply'],
+    ['broadcasts','broadcast.send'],['automations','automation.manage'],
+    ['flows','automation.manage'],['products','catalogue.manage'],
+    ['quotations','quotation.manage'],['api_keys','api.manage'],
+    ['webhook_endpoints','api.manage'],['ai_knowledge_documents','ai.configure'],
+    ['account_invitations','members.manage']
+    ,['pipelines','quotation.manage'],['deals','quotation.manage'],
+    ['tags','contacts.write'],['custom_fields','contacts.write'],
+    ['contact_notes','contacts.write'],['quick_replies','inbox.reply'],
+    ['ai_knowledge_chunks','ai.configure']
+  ] LOOP
+    t:=item[1]; cap:=item[2];
+    IF to_regclass('public.'||t) IS NULL THEN CONTINUE; END IF;
+    EXECUTE format('CREATE POLICY managed_insert ON public.%I AS RESTRICTIVE FOR INSERT TO authenticated WITH CHECK (is_platform_admin() OR managed_account_allows(account_id,%L))',t,cap);
+    EXECUTE format('CREATE POLICY managed_update ON public.%I AS RESTRICTIVE FOR UPDATE TO authenticated USING (is_platform_admin() OR managed_account_allows(account_id,%L)) WITH CHECK (is_platform_admin() OR managed_account_allows(account_id,%L))',t,cap,cap);
+    EXECUTE format('CREATE POLICY managed_delete ON public.%I AS RESTRICTIVE FOR DELETE TO authenticated USING (is_platform_admin() OR managed_account_allows(account_id,%L))',t,cap);
+  END LOOP;
+END $$;
+
+-- Child tables must not provide an alternate way to edit a protected workflow.
+DO $$ DECLARE item text[]; BEGIN
+  FOREACH item SLICE 1 IN ARRAY ARRAY[
+    ['flow_nodes','flows','flow_id','automation.manage'],
+    ['automation_steps','automations','automation_id','automation.manage'],
+    ['broadcast_recipients','broadcasts','broadcast_id','broadcast.send'],
+    ['messages','conversations','conversation_id','inbox.reply']
+    ,['contact_tags','contacts','contact_id','contacts.write'],
+    ['contact_custom_values','contacts','contact_id','contacts.write'],
+    ['pipeline_stages','pipelines','pipeline_id','quotation.manage']
+  ] LOOP
+    IF to_regclass('public.'||item[1]) IS NULL THEN CONTINUE; END IF;
+    EXECUTE format('CREATE POLICY managed_child_write ON public.%I AS RESTRICTIVE FOR ALL TO authenticated USING (EXISTS (SELECT 1 FROM %I p WHERE p.id=%I.%I)) WITH CHECK (EXISTS (SELECT 1 FROM %I p WHERE p.id=%I.%I AND (is_platform_admin() OR managed_account_allows(p.account_id,%L))))',item[1],item[2],item[1],item[3],item[2],item[1],item[3],item[4]);
+    EXECUTE format('CREATE POLICY managed_child_delete ON public.%I AS RESTRICTIVE FOR DELETE TO authenticated USING (EXISTS (SELECT 1 FROM %I p WHERE p.id=%I.%I AND (is_platform_admin() OR managed_account_allows(p.account_id,%L))))',item[1],item[2],item[1],item[3],item[4]);
+  END LOOP;
+END $$;
+
+-- Existing path/role storage policies remain in force. This adds the service
+-- capability check for direct browser uploads and removals.
+DO $$ BEGIN
+  IF to_regclass('storage.objects') IS NOT NULL THEN
+    EXECUTE $policy$CREATE POLICY managed_storage_insert ON storage.objects AS RESTRICTIVE FOR INSERT TO authenticated WITH CHECK (
+      bucket_id NOT IN ('flow-media','chat-media') OR is_platform_admin() OR EXISTS (
+        SELECT 1 FROM public.profiles p WHERE p.user_id=auth.uid() AND managed_account_allows(p.account_id,CASE WHEN bucket_id='flow-media' THEN 'automation.manage' ELSE 'inbox.reply' END)
+      ))$policy$;
+    EXECUTE $policy$CREATE POLICY managed_storage_update ON storage.objects AS RESTRICTIVE FOR UPDATE TO authenticated USING (
+      bucket_id NOT IN ('flow-media','chat-media') OR is_platform_admin() OR EXISTS (
+        SELECT 1 FROM public.profiles p WHERE p.user_id=auth.uid() AND managed_account_allows(p.account_id,CASE WHEN bucket_id='flow-media' THEN 'automation.manage' ELSE 'inbox.reply' END)
+      )) WITH CHECK (
+      bucket_id NOT IN ('flow-media','chat-media') OR is_platform_admin() OR EXISTS (
+        SELECT 1 FROM public.profiles p WHERE p.user_id=auth.uid() AND managed_account_allows(p.account_id,CASE WHEN bucket_id='flow-media' THEN 'automation.manage' ELSE 'inbox.reply' END)
+      ))$policy$;
+    EXECUTE $policy$CREATE POLICY managed_storage_delete ON storage.objects AS RESTRICTIVE FOR DELETE TO authenticated USING (
+      bucket_id NOT IN ('flow-media','chat-media') OR is_platform_admin() OR EXISTS (
+        SELECT 1 FROM public.profiles p WHERE p.user_id=auth.uid() AND managed_account_allows(p.account_id,CASE WHEN bucket_id='flow-media' THEN 'automation.manage' ELSE 'inbox.reply' END)
+      ))$policy$;
+  END IF;
+END $$;
+
+CREATE OR REPLACE FUNCTION public.managed_subscription_admin(
+  p_account_id uuid,p_plan_id text,p_industry_id text,p_status text,p_period_start timestamptz,p_period_end timestamptz,p_extra text[] DEFAULT '{}'
+) RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path=public AS $$
+DECLARE before_row jsonb;
+BEGIN
+  IF NOT is_platform_admin() THEN RAISE EXCEPTION 'Platform administrator required' USING ERRCODE='42501'; END IF;
+  IF p_period_end<=p_period_start OR p_period_end>p_period_start+interval '1 year' THEN RAISE EXCEPTION 'Invalid subscription period'; END IF;
+  IF EXISTS (SELECT 1 FROM unnest(p_extra) cap WHERE cap NOT IN ('inbox.reply','contacts.write','broadcast.send','ai.use','api.access','members.manage','catalogue.manage','quotation.manage')) THEN RAISE EXCEPTION 'Invalid capability'; END IF;
+  PERFORM 1 FROM accounts WHERE id=p_account_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Account not found'; END IF;
+  SELECT to_jsonb(s) INTO before_row FROM managed_subscriptions s WHERE account_id=p_account_id;
+  IF NOT EXISTS(SELECT 1 FROM subscription_plans WHERE id=p_plan_id AND is_active) THEN RAISE EXCEPTION 'Plan unavailable'; END IF;
+  IF p_status='active' AND (
+    NOT EXISTS(SELECT 1 FROM managed_business_profiles WHERE account_id=p_account_id AND onboarding_complete)
+    OR NOT EXISTS(SELECT 1 FROM whatsapp_config WHERE account_id=p_account_id AND status='connected')
+    OR NOT EXISTS(SELECT 1 FROM managed_ai_drafts WHERE account_id=p_account_id AND published_version IS NOT NULL)
+    OR NOT EXISTS(SELECT 1 FROM ai_configs WHERE account_id=p_account_id AND is_active)
+  ) THEN RAISE EXCEPTION 'Complete business onboarding, connect WhatsApp and publish the receptionist before activation'; END IF;
+  INSERT INTO managed_subscriptions(account_id,plan_id,industry_id,status,period_start,period_end,extra_capabilities)
+  VALUES(p_account_id,p_plan_id,p_industry_id,p_status,p_period_start,p_period_end,p_extra)
+  ON CONFLICT(account_id) DO UPDATE SET plan_id=excluded.plan_id,industry_id=excluded.industry_id,status=excluded.status,period_start=excluded.period_start,period_end=excluded.period_end,extra_capabilities=excluded.extra_capabilities,updated_at=now();
+  -- Legacy responders would otherwise suppress or compete with the managed
+  -- receptionist. Enrollment is an explicit operator-controlled transition.
+  IF before_row IS NULL THEN
+    UPDATE automations SET is_active=false WHERE account_id=p_account_id AND is_active;
+    UPDATE flows SET status='draft' WHERE account_id=p_account_id AND status='active';
+    IF to_regclass('public.flow_runs') IS NOT NULL THEN
+      UPDATE flow_runs SET status='cancelled',ended_at=now(),end_reason='Managed service enrollment' WHERE account_id=p_account_id AND status='active';
+    END IF;
+  END IF;
+  INSERT INTO managed_business_profiles(account_id) VALUES(p_account_id) ON CONFLICT DO NOTHING;
+  INSERT INTO managed_ai_drafts(account_id,system_prompt) SELECT p_account_id,system_prompt FROM industry_packages WHERE id=p_industry_id ON CONFLICT DO NOTHING;
+  INSERT INTO platform_audit_log(account_id,actor_id,action,details) VALUES(p_account_id,auth.uid(),'subscription.updated',jsonb_build_object('before',before_row,'plan_id',p_plan_id,'status',p_status,'period_end',p_period_end));
+END $$;
+
+CREATE OR REPLACE FUNCTION public.managed_save_business(p_account_id uuid,p_name text,p_description text,p_support text,p_hours text)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path=public AS $$
+BEGIN
+  IF NOT is_platform_admin() AND NOT is_account_member(p_account_id,'admin') THEN RAISE EXCEPTION 'Account administrator required' USING ERRCODE='42501'; END IF;
+  IF NOT EXISTS(SELECT 1 FROM managed_subscriptions WHERE account_id=p_account_id) THEN RAISE EXCEPTION 'Managed account required'; END IF;
+  IF length(trim(p_name))=0 OR length(trim(p_support))=0 THEN RAISE EXCEPTION 'Business name and support contact are required'; END IF;
+  INSERT INTO managed_business_profiles(account_id,business_name,description,support_contact,operating_hours,onboarding_complete)
+  VALUES(p_account_id,trim(p_name),p_description,trim(p_support),p_hours,true)
+  ON CONFLICT(account_id) DO UPDATE SET business_name=excluded.business_name,description=excluded.description,support_contact=excluded.support_contact,operating_hours=excluded.operating_hours,onboarding_complete=true,updated_at=now();
+  INSERT INTO platform_audit_log(account_id,actor_id,action) VALUES(p_account_id,auth.uid(),'business.updated');
+END $$;
+
+CREATE OR REPLACE FUNCTION public.managed_record_payment(p_account_id uuid,p_reference text,p_amount bigint,p_currency text)
+RETURNS uuid LANGUAGE plpgsql SECURITY DEFINER SET search_path=public AS $$
+DECLARE result managed_payments;
+BEGIN
+  IF NOT is_platform_admin() THEN RAISE EXCEPTION 'Platform administrator required' USING ERRCODE='42501'; END IF;
+  IF NOT EXISTS(SELECT 1 FROM managed_subscriptions s JOIN subscription_plans p ON p.id=s.plan_id WHERE s.account_id=p_account_id AND p.currency=p_currency) THEN RAISE EXCEPTION 'Subscription currency mismatch'; END IF;
+  INSERT INTO managed_payments(account_id,reference,amount_minor,currency,recorded_by) VALUES(p_account_id,trim(p_reference),p_amount,p_currency,auth.uid()) ON CONFLICT(account_id,reference) DO NOTHING RETURNING * INTO result;
+  IF NOT FOUND THEN
+    SELECT * INTO result FROM managed_payments WHERE account_id=p_account_id AND reference=trim(p_reference);
+    IF result.amount_minor<>p_amount OR result.currency<>p_currency THEN RAISE EXCEPTION 'Payment reference already used with different details'; END IF;
+    RETURN result.id;
+  END IF;
+  INSERT INTO platform_audit_log(account_id,actor_id,action,details) VALUES(p_account_id,auth.uid(),'payment.recorded',jsonb_build_object('payment_id',result.id,'amount_minor',p_amount,'currency',p_currency));
+  RETURN result.id;
+END $$;
+
+CREATE OR REPLACE FUNCTION public.managed_update_plan(p_id text,p_monthly bigint,p_setup bigint,p_seats integer,p_ai integer,p_outbound integer)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path=public AS $$
+BEGIN
+  IF NOT is_platform_admin() THEN RAISE EXCEPTION 'Platform administrator required' USING ERRCODE='42501'; END IF;
+  UPDATE subscription_plans SET monthly_price_minor=p_monthly,setup_price_minor=p_setup,seat_limit=p_seats,ai_generation_limit=p_ai,outbound_attempt_limit=p_outbound WHERE id=p_id;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Plan not found'; END IF;
+  INSERT INTO platform_audit_log(actor_id,action,details) VALUES(auth.uid(),'plan.updated',jsonb_build_object('plan_id',p_id,'monthly_price_minor',p_monthly,'setup_price_minor',p_setup,'seats',p_seats,'ai_limit',p_ai,'outbound_limit',p_outbound));
+END $$;
+REVOKE ALL ON FUNCTION public.managed_update_plan(text,bigint,bigint,integer,integer,integer) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.managed_update_plan(text,bigint,bigint,integer,integer,integer) TO authenticated;
+
+CREATE OR REPLACE FUNCTION public.managed_save_ai_draft(p_account_id uuid,p_prompt text,p_enabled boolean,p_reply_limit integer,p_expected_version integer DEFAULT NULL)
+RETURNS integer LANGUAGE plpgsql SECURITY DEFINER SET search_path=public AS $$
+DECLARE next_version integer;
+BEGIN
+  IF NOT is_platform_admin() THEN RAISE EXCEPTION 'Platform administrator required' USING ERRCODE='42501'; END IF;
+  PERFORM 1 FROM accounts WHERE id=p_account_id FOR UPDATE;
+  IF NOT EXISTS(SELECT 1 FROM managed_subscriptions WHERE account_id=p_account_id) THEN RAISE EXCEPTION 'Managed account required'; END IF;
+  IF EXISTS(SELECT 1 FROM managed_ai_drafts WHERE account_id=p_account_id AND version IS DISTINCT FROM p_expected_version) THEN RAISE EXCEPTION 'Draft changed; reload before saving'; END IF;
+  INSERT INTO managed_ai_drafts(account_id,system_prompt,auto_reply_enabled,reply_limit) VALUES(p_account_id,p_prompt,p_enabled,p_reply_limit)
+  ON CONFLICT(account_id) DO UPDATE SET system_prompt=excluded.system_prompt,auto_reply_enabled=excluded.auto_reply_enabled,reply_limit=excluded.reply_limit,version=managed_ai_drafts.version+1,updated_at=now() RETURNING version INTO next_version;
+  INSERT INTO platform_audit_log(account_id,actor_id,action,details) VALUES(p_account_id,auth.uid(),'ai.draft_saved',jsonb_build_object('version',next_version));
+  RETURN next_version;
+END $$;
+
+CREATE OR REPLACE FUNCTION public.managed_publish_ai(p_account_id uuid,p_expected_version integer)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path=public AS $$
+DECLARE draft managed_ai_drafts; business managed_business_profiles;
+BEGIN
+  IF NOT is_platform_admin() THEN RAISE EXCEPTION 'Platform administrator required' USING ERRCODE='42501'; END IF;
+  SELECT * INTO draft FROM managed_ai_drafts WHERE account_id=p_account_id FOR UPDATE;
+  IF NOT FOUND OR draft.version<>p_expected_version THEN RAISE EXCEPTION 'Draft changed; reload before publishing'; END IF;
+  SELECT * INTO business FROM managed_business_profiles WHERE account_id=p_account_id;
+  IF NOT FOUND OR NOT business.onboarding_complete THEN RAISE EXCEPTION 'Complete business onboarding before publishing'; END IF;
+  UPDATE ai_configs SET system_prompt=draft.system_prompt || E'\nBusiness name: ' || business.business_name || E'\nBusiness information: ' || business.description || E'\nSupport contact: ' || business.support_contact || E'\nOperating hours: ' || business.operating_hours,
+    auto_reply_enabled=draft.auto_reply_enabled,auto_reply_max_per_conversation=draft.reply_limit,is_active=true WHERE account_id=p_account_id;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Configure and verify AI credentials before publishing'; END IF;
+  UPDATE managed_ai_drafts SET published_version=version WHERE account_id=p_account_id;
+  INSERT INTO platform_audit_log(account_id,actor_id,action,details) VALUES(p_account_id,auth.uid(),'ai.published',jsonb_build_object('version',draft.version));
+END $$;
+
+-- One row lock serializes allowance consumption with subscription changes.
+-- Attempts remain counted on uncertain external outcomes; automatic refunds
+-- would permit retries to exceed the allowance and risk duplicate sends.
+CREATE OR REPLACE FUNCTION public.reserve_managed_usage(p_metric text,p_account_id uuid DEFAULT NULL,p_phone_number_id text DEFAULT NULL,p_preview boolean DEFAULT false)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path=public AS $$
+DECLARE account uuid:=p_account_id; s managed_subscriptions; allowance integer; consumed bigint;
+BEGIN
+  IF p_metric NOT IN ('ai_generations','outbound_attempts') THEN RAISE EXCEPTION 'Invalid usage metric'; END IF;
+  IF account IS NULL THEN SELECT account_id INTO account FROM whatsapp_config WHERE phone_number_id=p_phone_number_id; END IF;
+  IF account IS NULL THEN RAISE EXCEPTION 'Connection not associated with an account'; END IF;
+  SELECT * INTO s FROM managed_subscriptions WHERE account_id=account FOR UPDATE;
+  IF NOT FOUND THEN RETURN; END IF;
+  IF p_preview AND p_metric<>'ai_generations' THEN RAISE EXCEPTION 'Only AI generations can be previewed'; END IF;
+  IF NOT p_preview AND NOT managed_account_allows(account,CASE WHEN p_metric='ai_generations' THEN 'ai.use' ELSE 'inbox.reply' END) THEN RAISE EXCEPTION 'Subscription is inactive or this feature is unavailable' USING ERRCODE='42501'; END IF;
+  SELECT CASE WHEN p_metric='ai_generations' THEN ai_generation_limit ELSE outbound_attempt_limit END INTO allowance FROM subscription_plans WHERE id=s.plan_id;
+  INSERT INTO managed_usage(account_id,period_start,metric,used) VALUES(account,s.period_start,p_metric,0) ON CONFLICT DO NOTHING;
+  UPDATE managed_usage SET used=used+1 WHERE account_id=account AND period_start=s.period_start AND metric=p_metric AND used<allowance RETURNING used INTO consumed;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Subscription usage allowance reached' USING ERRCODE='42501'; END IF;
+END $$;
+REVOKE ALL ON FUNCTION public.reserve_managed_usage(text,uuid,text,boolean) FROM PUBLIC,anon,authenticated;
+GRANT EXECUTE ON FUNCTION public.reserve_managed_usage(text,uuid,text,boolean) TO service_role;
+
+-- Signup creates a pending subscription only when the operator enables it.
+CREATE OR REPLACE FUNCTION public.managed_account_created() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=public AS $$
+BEGIN
+  IF EXISTS(SELECT 1 FROM managed_platform_settings WHERE managed_signup) THEN
+    INSERT INTO managed_subscriptions(account_id,plan_id,industry_id) VALUES(NEW.id,'launch','distributor-sales');
+    INSERT INTO managed_business_profiles(account_id) VALUES(NEW.id);
+    INSERT INTO managed_ai_drafts(account_id,system_prompt) SELECT NEW.id,system_prompt FROM industry_packages WHERE id='distributor-sales';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER managed_new_account AFTER INSERT ON public.accounts FOR EACH ROW EXECUTE FUNCTION public.managed_account_created();
+REVOKE ALL ON FUNCTION public.managed_account_created() FROM PUBLIC;
+
+-- SECURITY DEFINER mutations must not bypass the managed restrictions.
+CREATE OR REPLACE FUNCTION public.enforce_managed_write() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=public AS $$
+DECLARE account uuid; cap text:=TG_ARGV[0];
+BEGIN
+  IF auth.uid() IS NULL OR is_platform_admin() THEN
+    IF TG_OP='DELETE' THEN RETURN OLD; ELSE RETURN NEW; END IF;
+  END IF;
+  IF TG_OP='DELETE' THEN account:=OLD.account_id; ELSE account:=NEW.account_id; END IF;
+  IF NOT managed_account_allows(account,cap) THEN RAISE EXCEPTION 'Your subscription does not allow this operation' USING ERRCODE='42501'; END IF;
+  IF TG_TABLE_NAME='account_invitations' AND TG_OP<>'DELETE' AND EXISTS(SELECT 1 FROM managed_subscriptions WHERE account_id=account) AND NEW.role::text NOT IN ('agent','viewer') THEN RAISE EXCEPTION 'Managed clients can invite operators and viewers only' USING ERRCODE='42501'; END IF;
+  IF TG_OP='DELETE' THEN RETURN OLD; ELSE RETURN NEW; END IF;
+END $$;
+REVOKE ALL ON FUNCTION public.enforce_managed_write() FROM PUBLIC;
+DO $$ DECLARE item text[]; BEGIN
+  FOREACH item SLICE 1 IN ARRAY ARRAY[['quotations','quotation.manage'],['flows','automation.manage'],['automations','automation.manage'],['broadcasts','broadcast.send'],['account_invitations','members.manage']] LOOP
+    IF to_regclass('public.'||item[1]) IS NULL THEN CONTINUE; END IF;
+    EXECUTE format('CREATE TRIGGER managed_write_guard BEFORE INSERT OR UPDATE OR DELETE ON public.%I FOR EACH ROW EXECUTE FUNCTION enforce_managed_write(%L)',item[1],item[2]);
+  END LOOP;
+END $$;
+
+CREATE OR REPLACE FUNCTION public.managed_guard_seats() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=public AS $$
+DECLARE seat_cap integer; members integer;
+BEGIN
+  IF TG_OP='UPDATE' AND NEW.account_id IS NOT DISTINCT FROM OLD.account_id THEN RETURN NEW; END IF;
+  PERFORM 1 FROM accounts WHERE id=NEW.account_id FOR UPDATE;
+  SELECT p.seat_limit INTO seat_cap FROM managed_subscriptions s JOIN subscription_plans p ON p.id=s.plan_id WHERE s.account_id=NEW.account_id;
+  IF FOUND THEN
+    SELECT count(*) INTO members FROM profiles WHERE account_id=NEW.account_id;
+    IF members>=seat_cap THEN RAISE EXCEPTION 'Subscription seat allowance reached' USING ERRCODE='42501'; END IF;
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER managed_seat_limit BEFORE INSERT OR UPDATE OF account_id ON public.profiles FOR EACH ROW EXECUTE FUNCTION public.managed_guard_seats();
+REVOKE ALL ON FUNCTION public.managed_guard_seats() FROM PUBLIC;
+
+REVOKE ALL ON FUNCTION public.managed_subscription_admin(uuid,text,text,text,timestamptz,timestamptz,text[]),public.managed_save_business(uuid,text,text,text,text),public.managed_record_payment(uuid,text,bigint,text),public.managed_save_ai_draft(uuid,text,boolean,integer,integer),public.managed_publish_ai(uuid,integer) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.managed_subscription_admin(uuid,text,text,text,timestamptz,timestamptz,text[]),public.managed_save_business(uuid,text,text,text,text),public.managed_record_payment(uuid,text,bigint,text),public.managed_save_ai_draft(uuid,text,boolean,integer,integer),public.managed_publish_ai(uuid,integer) TO authenticated;
+
+COMMIT;

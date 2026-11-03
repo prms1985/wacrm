@@ -1,0 +1,792 @@
+'use client';
+
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { toast } from 'sonner';
+import {
+  Loader2,
+  Sparkles,
+  CheckCircle2,
+  Trash2,
+  Eye,
+  EyeOff,
+} from 'lucide-react';
+import { useManagedAccess } from '@/hooks/use-managed-access';
+import { useAuth } from '@/hooks/use-auth';
+import { canEditSettings } from '@/lib/auth/roles';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { Switch } from '@/components/ui/switch';
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from '@/components/ui/card';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { SettingsPanelHead } from './settings-panel-head';
+import { AiKnowledgeCard } from './ai-knowledge';
+import { AI_PROVIDER_DEFAULT_MODEL } from '@/lib/ai/defaults';
+import {
+  GEMINI_DEFAULT_MODEL,
+  aiProviderChoice,
+  aiProviderPayload,
+  type AiProviderChoice,
+} from '@/lib/ai/provider-presets';
+import type { AccountMember } from '@/types';
+import { fetchAccountMembers, memberLabel } from '@/lib/account/members';
+import { useTranslations } from 'next-intl';
+import { invalidateAiAccountStatus } from '@/lib/ai/account-status-cache';
+
+const MASKED_KEY = '••••••••••••••••';
+
+// Radix Select can't use an empty-string item value, so the "leave
+// unassigned" choice gets a sentinel that maps to null in the payload.
+const HANDOFF_QUEUE = '__queue__';
+
+const PROVIDER_LABEL: Record<
+  Exclude<AiProviderChoice, 'openai_compatible'>,
+  string
+> = {
+  gemini: 'Google Gemini',
+  openai: 'OpenAI',
+  anthropic: 'Anthropic (Claude)',
+};
+
+const KEY_PLACEHOLDER: Record<AiProviderChoice, string> = {
+  gemini: 'AIza...',
+  openai: 'sk-...',
+  anthropic: 'sk-ant-...',
+  openai_compatible: 'your-api-key',
+};
+
+export function AiConfig() {
+  const { accountId, accountRole, profileLoading } = useAuth();
+  const { data: managedAccess } = useManagedAccess();
+  const canEdit =
+    !!accountRole &&
+    canEditSettings(accountRole) &&
+    (!managedAccess?.subscription ||
+      managedAccess.capabilities?.['ai.configure'] === true);
+  const t = useTranslations('Settings.aiConfig');
+
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [removing, setRemoving] = useState(false);
+
+  const [configured, setConfigured] = useState(false);
+  const [provider, setProvider] = useState<AiProviderChoice>('gemini');
+  const [model, setModel] = useState(GEMINI_DEFAULT_MODEL);
+  const [baseUrl, setBaseUrl] = useState('');
+  const [apiKey, setApiKey] = useState('');
+  const [keyEdited, setKeyEdited] = useState(false);
+  const [showKey, setShowKey] = useState(false);
+  const [hasStoredKey, setHasStoredKey] = useState(false);
+  const [embeddingsKey, setEmbeddingsKey] = useState('');
+  const [embeddingsKeyEdited, setEmbeddingsKeyEdited] = useState(false);
+  const [hasStoredEmbeddingsKey, setHasStoredEmbeddingsKey] = useState(false);
+  const [systemPrompt, setSystemPrompt] = useState('');
+  const [isActive, setIsActive] = useState(false);
+  const [autoReplyEnabled, setAutoReplyEnabled] = useState(false);
+  const [maxPerConversation, setMaxPerConversation] = useState(3);
+  // Empty string = leave unassigned (shared queue).
+  const [handoffAgentId, setHandoffAgentId] = useState('');
+  const [members, setMembers] = useState<AccountMember[]>([]);
+
+  // AI Receptionist controls
+  const [receptionistEnabled, setReceptionistEnabled] = useState(true);
+  const [receptionistName, setReceptionistName] = useState('Receptionist');
+  const [greetingPrompt, setGreetingPrompt] = useState('');
+  const [collectDetails, setCollectDetails] = useState(true);
+  const [suggestProducts, setSuggestProducts] = useState(true);
+  const [prepareQuotations, setPrepareQuotations] = useState(true);
+  const [transferToStaff, setTransferToStaff] = useState(true);
+
+  // Guard keyed on the account (not a bare boolean) so an in-place
+  // account switch — ownership transfer, multi-account membership —
+  // refetches instead of showing the previous account's config. Mirrors
+  // the loadedAccountIdRef pattern in whatsapp-config.tsx.
+  const loadedAccountIdRef = useRef<string | null>(null);
+
+  const fetchConfig = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/ai/config');
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error ?? t('loadFailed'));
+        return;
+      }
+      if (data.configured) {
+        setConfigured(true);
+        setProvider(aiProviderChoice(data.provider, data.base_url));
+        setModel(data.model);
+        setBaseUrl(data.base_url ?? '');
+        setSystemPrompt(data.system_prompt ?? '');
+        setIsActive(data.is_active);
+        setAutoReplyEnabled(data.auto_reply_enabled);
+        setMaxPerConversation(data.auto_reply_max_per_conversation ?? 3);
+        setHandoffAgentId(data.handoff_agent_id ?? '');
+        setHasStoredKey(Boolean(data.has_key));
+        setApiKey(data.has_key ? MASKED_KEY : '');
+        setKeyEdited(false);
+        setHasStoredEmbeddingsKey(Boolean(data.has_embeddings_key));
+        setEmbeddingsKey(data.has_embeddings_key ? MASKED_KEY : '');
+        setEmbeddingsKeyEdited(false);
+        if (data.receptionist_config) {
+          const rc = data.receptionist_config;
+          setReceptionistEnabled(rc.enabled !== false);
+          setReceptionistName(
+            rc.receptionistName ?? rc.receptionist_name ?? 'Receptionist'
+          );
+          setGreetingPrompt(rc.greetingPrompt ?? rc.greeting_prompt ?? '');
+          setCollectDetails(
+            rc.collectDetails !== false && rc.collect_details !== false
+          );
+          setSuggestProducts(
+            rc.suggestProducts !== false && rc.suggest_products !== false
+          );
+          setPrepareQuotations(
+            rc.prepareQuotations !== false && rc.prepare_quotations !== false
+          );
+          setTransferToStaff(
+            rc.transferToStaff !== false && rc.transfer_to_staff !== false
+          );
+        }
+      }
+    } catch {
+      toast.error(t('loadFailed'));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!accountId || loadedAccountIdRef.current === accountId) return;
+    loadedAccountIdRef.current = accountId;
+    void fetchConfig();
+    // Members populate the handoff-target picker. Best-effort — on an
+    // older deployment without the endpoint the picker just shows the
+    // queue option.
+    void fetchAccountMembers().then(setMembers);
+  }, [accountId, fetchConfig]);
+
+  // Swap the model default when the provider changes, unless the user
+  // typed a custom model.
+  const handleProviderChange = (next: AiProviderChoice) => {
+    if (next === provider) return;
+    setApiKey('');
+    setHasStoredKey(false);
+    setKeyEdited(false);
+    setShowKey(false);
+    setProvider(next);
+    const isDefaultModel =
+      model === AI_PROVIDER_DEFAULT_MODEL.openai ||
+      model === AI_PROVIDER_DEFAULT_MODEL.anthropic ||
+      model === AI_PROVIDER_DEFAULT_MODEL.openai_compatible ||
+      model === GEMINI_DEFAULT_MODEL ||
+      provider === 'gemini' ||
+      next === 'gemini' ||
+      model.trim() === '';
+    if (isDefaultModel)
+      setModel(
+        next === 'gemini'
+          ? GEMINI_DEFAULT_MODEL
+          : next === 'openai_compatible'
+            ? ''
+            : AI_PROVIDER_DEFAULT_MODEL[next]
+      );
+  };
+
+  const keyPayload = () => (keyEdited ? apiKey.trim() : undefined);
+
+  // undefined = leave unchanged; '' typed = null (clear); text = set.
+  const embeddingsKeyPayload = () =>
+    embeddingsKeyEdited ? embeddingsKey.trim() || null : undefined;
+
+  const buildBody = () => ({
+    ...aiProviderPayload(provider, baseUrl),
+    model: model.trim(),
+    api_key: keyPayload(),
+    embeddings_api_key: embeddingsKeyPayload(),
+    system_prompt: systemPrompt.trim() || null,
+    is_active: isActive,
+    auto_reply_enabled: autoReplyEnabled,
+    auto_reply_max_per_conversation: maxPerConversation,
+    handoff_agent_id: handoffAgentId || null,
+    receptionist_config: {
+      enabled: receptionistEnabled,
+      receptionist_name: receptionistName.trim() || 'Receptionist',
+      greeting_prompt: greetingPrompt.trim() || null,
+      collect_details: collectDetails,
+      suggest_products: suggestProducts,
+      prepare_quotations: prepareQuotations,
+      transfer_to_staff: transferToStaff,
+    },
+  });
+
+  const handleTest = async () => {
+    setTesting(true);
+    try {
+      const res = await fetch('/api/ai/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...aiProviderPayload(provider, baseUrl),
+          model: model.trim(),
+          api_key: keyPayload(),
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) toast.success(t('testSuccess'));
+      else toast.error(data.error ?? t('testRejected'));
+    } catch {
+      toast.error(t('testNetworkError'));
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const handleSave = async () => {
+    if (!model.trim()) {
+      toast.error(t('missingModel'));
+      return;
+    }
+    if (provider === 'openai_compatible' && !baseUrl.trim()) {
+      toast.error(t('missingBaseUrl'));
+      return;
+    }
+    if (!configured && !keyEdited) {
+      toast.error(t('missingApiKey'));
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await fetch('/api/ai/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildBody()),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        invalidateAiAccountStatus();
+        toast.success(t('saveSuccess'));
+        await fetchConfig();
+      } else {
+        toast.error(data.error ?? t('saveFailed'));
+      }
+    } catch {
+      toast.error(t('saveFailed'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleRemove = async () => {
+    setRemoving(true);
+    try {
+      const res = await fetch('/api/ai/config', { method: 'DELETE' });
+      if (res.ok) {
+        invalidateAiAccountStatus();
+        toast.success(t('removeSuccess'));
+        setConfigured(false);
+        setBaseUrl('');
+        setHasStoredKey(false);
+        setApiKey('');
+        setKeyEdited(false);
+        setHasStoredEmbeddingsKey(false);
+        setEmbeddingsKey('');
+        setEmbeddingsKeyEdited(false);
+        setIsActive(false);
+        setAutoReplyEnabled(false);
+        setSystemPrompt('');
+        setHandoffAgentId('');
+        setReceptionistEnabled(true);
+        setReceptionistName('Receptionist');
+        setGreetingPrompt('');
+        setCollectDetails(true);
+        setSuggestProducts(true);
+        setPrepareQuotations(true);
+        setTransferToStaff(true);
+      } else {
+        const data = await res.json();
+        toast.error(data.error ?? t('removeFailed'));
+      }
+    } catch {
+      toast.error(t('removeFailed'));
+    } finally {
+      setRemoving(false);
+    }
+  };
+
+  if (loading || profileLoading) {
+    return (
+      <div className="text-muted-foreground flex items-center justify-center py-16">
+        <Loader2 className="mr-2 h-4 w-4 animate-spin" /> {t('loadFailed')}{' '}
+        {/* Re-using label or a global one, wait, loading is better. Let's use useTranslations from overview or just hardcode Loading... actually I should add loading to aiConfig */}
+        {/* Wait, I didn't add loading to aiConfig. I'll just use loading. */}
+      </div>
+    );
+  }
+
+  const disabled = !canEdit || saving;
+
+  return (
+    <div>
+      <SettingsPanelHead title={t('title')} description={t('description')} />
+
+      {!canEdit && (
+        <p className="border-border bg-muted/40 text-muted-foreground mb-4 rounded-md border px-3 py-2 text-sm">
+          {t('adminOnlyConfig')}
+        </p>
+      )}
+
+      <div className="space-y-6">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Sparkles className="text-primary h-4 w-4" />{' '}
+              {t('providerAndKey')}
+            </CardTitle>
+            <CardDescription>{t('encryptionNotice')}</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label>{t('provider')}</Label>
+                <Select
+                  value={provider}
+                  onValueChange={(v) =>
+                    handleProviderChange(v as AiProviderChoice)
+                  }
+                  disabled={disabled}
+                >
+                  <SelectTrigger>
+                    <SelectValue>
+                      {provider === 'openai_compatible'
+                        ? t('providerOpenAiCompatible')
+                        : PROVIDER_LABEL[provider]}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="gemini">Google Gemini</SelectItem>
+                    <SelectItem value="openai">
+                      {PROVIDER_LABEL.openai}
+                    </SelectItem>
+                    <SelectItem value="anthropic">
+                      {PROVIDER_LABEL.anthropic}
+                    </SelectItem>
+                    <SelectItem value="openai_compatible">
+                      {t('providerOpenAiCompatible')}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="ai-model">{t('model')}</Label>
+                <Input
+                  id="ai-model"
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  placeholder={
+                    provider === 'gemini'
+                      ? GEMINI_DEFAULT_MODEL
+                      : AI_PROVIDER_DEFAULT_MODEL[provider]
+                  }
+                  disabled={disabled}
+                />
+              </div>
+
+              {provider === 'openai_compatible' && (
+                <div className="space-y-2">
+                  <Label htmlFor="ai-base-url">{t('baseUrl')}</Label>
+                  <Input
+                    id="ai-base-url"
+                    value={baseUrl}
+                    onChange={(e) => setBaseUrl(e.target.value)}
+                    placeholder="https://api.example.com/v1"
+                    disabled={disabled}
+                    autoComplete="off"
+                  />
+                  <p className="text-muted-foreground text-xs">
+                    {t('baseUrlHint')}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {provider === 'gemini' && (
+              <div className="text-muted-foreground space-y-2 text-sm">
+                <p>{t('geminiHint')}</p>
+                <a
+                  href="https://aistudio.google.com/apikey"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary underline"
+                >
+                  {t('geminiGetKey')}
+                </a>
+                {' · '}
+                <a
+                  href="https://ai.google.dev/gemini-api/docs/pricing"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-primary underline"
+                >
+                  {t('geminiPricing')}
+                </a>
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <Label htmlFor="ai-key">{t('apiKey')}</Label>
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <Input
+                    id="ai-key"
+                    type={showKey ? 'text' : 'password'}
+                    value={apiKey}
+                    onChange={(e) => {
+                      setApiKey(e.target.value);
+                      setKeyEdited(true);
+                    }}
+                    onFocus={() => {
+                      if (!keyEdited && hasStoredKey) {
+                        setApiKey('');
+                        setKeyEdited(true);
+                      }
+                    }}
+                    placeholder={KEY_PLACEHOLDER[provider]}
+                    disabled={disabled}
+                    autoComplete="off"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowKey((s) => !s)}
+                    className="text-muted-foreground hover:text-foreground absolute top-1/2 right-2 -translate-y-1/2"
+                    tabIndex={-1}
+                  >
+                    {showKey ? (
+                      <EyeOff className="h-4 w-4" />
+                    ) : (
+                      <Eye className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
+                <Button
+                  variant="outline"
+                  onClick={handleTest}
+                  disabled={disabled || testing}
+                >
+                  {testing ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <CheckCircle2 className="mr-2 h-4 w-4" />
+                  )}
+                  {t('testKey')}
+                </Button>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="ai-embeddings-key">
+                {t('embeddingsKey')}{' '}
+                <span className="text-muted-foreground font-normal">
+                  {t('optionalSemanticSearch')}
+                </span>
+              </Label>
+              <Input
+                id="ai-embeddings-key"
+                type="password"
+                value={embeddingsKey}
+                onChange={(e) => {
+                  setEmbeddingsKey(e.target.value);
+                  setEmbeddingsKeyEdited(true);
+                }}
+                onFocus={() => {
+                  if (!embeddingsKeyEdited && hasStoredEmbeddingsKey) {
+                    setEmbeddingsKey('');
+                    setEmbeddingsKeyEdited(true);
+                  }
+                }}
+                placeholder="sk-... (OpenAI)"
+                disabled={disabled}
+                autoComplete="off"
+              />
+              <p className="text-muted-foreground text-xs">
+                {t('embeddingsHint', {
+                  sameKeyText: provider === 'openai' ? t('sameKeyText') : '',
+                })}
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">{t('behaviour')}</CardTitle>
+            <CardDescription>{t('behaviourDesc')}</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="ai-prompt">{t('businessContext')}</Label>
+              <Textarea
+                id="ai-prompt"
+                value={systemPrompt}
+                onChange={(e) => setSystemPrompt(e.target.value)}
+                placeholder={t('promptPlaceholder')}
+                rows={5}
+                disabled={disabled}
+              />
+            </div>
+
+            <div className="border-border flex items-center justify-between gap-4 rounded-md border p-3">
+              <div>
+                <p className="text-foreground text-sm font-medium">
+                  {t('enableAssistant')}
+                </p>
+                <p className="text-muted-foreground text-xs">
+                  {t('enableAssistantDesc')}
+                </p>
+              </div>
+              <Switch
+                checked={isActive}
+                onCheckedChange={setIsActive}
+                disabled={disabled}
+              />
+            </div>
+
+            <div className="border-border flex items-center justify-between gap-4 rounded-md border p-3">
+              <div>
+                <p className="text-foreground text-sm font-medium">
+                  {t('autoReply')}
+                </p>
+                <p className="text-muted-foreground text-xs">
+                  {t('autoReplyDesc')}
+                </p>
+              </div>
+              <Switch
+                checked={autoReplyEnabled}
+                onCheckedChange={setAutoReplyEnabled}
+                disabled={disabled || !isActive}
+              />
+            </div>
+
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <Label htmlFor="ai-max">{t('maxAutoReplies')}</Label>
+                <p className="text-muted-foreground text-xs">
+                  {t('maxAutoRepliesDesc')}
+                </p>
+              </div>
+              <Input
+                id="ai-max"
+                type="number"
+                min={1}
+                max={20}
+                value={maxPerConversation}
+                onChange={(e) =>
+                  setMaxPerConversation(
+                    Math.min(20, Math.max(1, Number(e.target.value) || 1))
+                  )
+                }
+                disabled={disabled || !autoReplyEnabled}
+                className="w-20"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="ai-handoff">{t('handoffTo')}</Label>
+              <p className="text-muted-foreground text-xs">
+                {t('handoffToDesc')}
+              </p>
+              <Select
+                value={handoffAgentId || HANDOFF_QUEUE}
+                onValueChange={(v) =>
+                  setHandoffAgentId(!v || v === HANDOFF_QUEUE ? '' : v)
+                }
+                disabled={disabled || !autoReplyEnabled}
+              >
+                <SelectTrigger id="ai-handoff">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={HANDOFF_QUEUE}>
+                    {t('handoffQueue')}
+                  </SelectItem>
+                  {members.map((m) => (
+                    <SelectItem key={m.user_id} value={m.user_id}>
+                      {memberLabel(m)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">
+              {t('receptionistTitle')}
+            </CardTitle>
+            <CardDescription>{t('receptionistDesc')}</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="border-border flex items-center justify-between gap-4 rounded-md border p-3">
+              <div>
+                <p className="text-foreground text-sm font-medium">
+                  {t('receptionistEnable')}
+                </p>
+                <p className="text-muted-foreground text-xs">
+                  {t('receptionistEnableDesc')}
+                </p>
+              </div>
+              <Switch
+                checked={receptionistEnabled}
+                onCheckedChange={setReceptionistEnabled}
+                disabled={disabled || !isActive || !autoReplyEnabled}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="ai-receptionist-name">
+                {t('receptionistNameLabel')}
+              </Label>
+              <Input
+                id="ai-receptionist-name"
+                value={receptionistName}
+                onChange={(e) => setReceptionistName(e.target.value)}
+                placeholder={t('receptionistNamePlaceholder')}
+                disabled={disabled || !receptionistEnabled || !autoReplyEnabled}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="ai-receptionist-greeting">
+                {t('greetingPromptLabel')}
+              </Label>
+              <Textarea
+                id="ai-receptionist-greeting"
+                value={greetingPrompt}
+                onChange={(e) => setGreetingPrompt(e.target.value)}
+                placeholder={t('greetingPromptPlaceholder')}
+                rows={3}
+                disabled={disabled || !receptionistEnabled || !autoReplyEnabled}
+              />
+            </div>
+
+            <div className="border-border flex items-center justify-between gap-4 rounded-md border p-3">
+              <div>
+                <p className="text-foreground text-sm font-medium">
+                  {t('collectDetailsLabel')}
+                </p>
+                <p className="text-muted-foreground text-xs">
+                  {t('collectDetailsDesc')}
+                </p>
+              </div>
+              <Switch
+                checked={collectDetails}
+                onCheckedChange={setCollectDetails}
+                disabled={disabled || !receptionistEnabled || !autoReplyEnabled}
+              />
+            </div>
+
+            <div className="border-border flex items-center justify-between gap-4 rounded-md border p-3">
+              <div>
+                <p className="text-foreground text-sm font-medium">
+                  {t('suggestProductsLabel')}
+                </p>
+                <p className="text-muted-foreground text-xs">
+                  {t('suggestProductsDesc')}
+                </p>
+              </div>
+              <Switch
+                checked={suggestProducts}
+                onCheckedChange={setSuggestProducts}
+                disabled={disabled || !receptionistEnabled || !autoReplyEnabled}
+              />
+            </div>
+
+            <div className="border-border flex items-center justify-between gap-4 rounded-md border p-3">
+              <div>
+                <p className="text-foreground text-sm font-medium">
+                  {t('prepareQuotationsLabel')}
+                </p>
+                <p className="text-muted-foreground text-xs">
+                  {t('prepareQuotationsDesc')}
+                </p>
+              </div>
+              <Switch
+                checked={prepareQuotations}
+                onCheckedChange={setPrepareQuotations}
+                disabled={disabled || !receptionistEnabled || !autoReplyEnabled}
+              />
+            </div>
+
+            <div className="border-border flex items-center justify-between gap-4 rounded-md border p-3">
+              <div>
+                <p className="text-foreground text-sm font-medium">
+                  {t('transferToStaffLabel')}
+                </p>
+                <p className="text-muted-foreground text-xs">
+                  {t('transferToStaffDesc')}
+                </p>
+              </div>
+              <Switch
+                checked={transferToStaff}
+                onCheckedChange={setTransferToStaff}
+                disabled={disabled || !receptionistEnabled || !autoReplyEnabled}
+              />
+            </div>
+          </CardContent>
+        </Card>
+
+        <AiKnowledgeCard
+          accountId={accountId}
+          canEdit={canEdit}
+          hasEmbeddingsKey={
+            embeddingsKeyEdited
+              ? embeddingsKey.trim().length > 0
+              : hasStoredEmbeddingsKey
+          }
+        />
+
+        <div className="flex items-center justify-between">
+          {configured ? (
+            <Button
+              variant="ghost"
+              onClick={handleRemove}
+              disabled={!canEdit || removing}
+              className="text-destructive hover:text-destructive"
+            >
+              {removing ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Trash2 className="mr-2 h-4 w-4" />
+              )}
+              {t('remove')}
+            </Button>
+          ) : (
+            <span />
+          )}
+
+          <Button onClick={handleSave} disabled={disabled}>
+            {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            {t('save')}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}

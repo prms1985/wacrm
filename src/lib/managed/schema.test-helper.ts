@@ -1,0 +1,32 @@
+// Shared pre-managed schema for actual migration and installation tests.
+export const managedSchemaFixture = `
+    CREATE ROLE anon; CREATE ROLE authenticated; CREATE ROLE service_role BYPASSRLS;
+    CREATE SCHEMA auth; CREATE TABLE auth.users(id uuid PRIMARY KEY);
+    CREATE SCHEMA storage; CREATE TABLE storage.objects(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),bucket_id text,name text);
+    ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY;
+    CREATE POLICY existing_storage_access ON storage.objects FOR ALL USING(true) WITH CHECK(true);
+    CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT nullif(current_setting('app.uid',true),'')::uuid $$;
+    CREATE TABLE accounts(id uuid PRIMARY KEY,name text,owner_user_id uuid);
+    CREATE TYPE account_role_enum AS ENUM ('owner','admin','agent','viewer');
+    CREATE TABLE profiles(id uuid DEFAULT gen_random_uuid(),user_id uuid PRIMARY KEY,account_id uuid REFERENCES accounts(id),account_role text);
+    CREATE FUNCTION is_account_member(target uuid,min_role account_role_enum DEFAULT 'viewer') RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER AS $$ SELECT EXISTS(SELECT 1 FROM profiles WHERE user_id=auth.uid() AND account_id=target AND (min_role='viewer' OR account_role IN ('owner','admin') OR (min_role='agent' AND account_role='agent'))) $$;
+    CREATE TABLE whatsapp_config(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),account_id uuid UNIQUE REFERENCES accounts(id),phone_number_id text UNIQUE,access_token text,verify_token text,status text,registered_at timestamptz);
+    CREATE TABLE ai_configs(account_id uuid UNIQUE REFERENCES accounts(id),api_key text,system_prompt text,is_active boolean,auto_reply_enabled boolean,auto_reply_max_per_conversation integer);
+    CREATE TABLE contacts(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),account_id uuid REFERENCES accounts(id),name text);
+    CREATE TABLE flows(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),account_id uuid REFERENCES accounts(id),status text DEFAULT 'draft');
+    CREATE TABLE automations(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),account_id uuid REFERENCES accounts(id),is_active boolean DEFAULT false);
+    CREATE TABLE flow_nodes(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),flow_id uuid REFERENCES flows(id));
+    CREATE TABLE quotations(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),account_id uuid REFERENCES accounts(id));
+    ALTER TABLE contacts ENABLE ROW LEVEL SECURITY; ALTER TABLE flows ENABLE ROW LEVEL SECURITY; ALTER TABLE flow_nodes ENABLE ROW LEVEL SECURITY;
+    CREATE POLICY contact_members ON contacts FOR ALL USING(is_account_member(account_id,'agent')) WITH CHECK(is_account_member(account_id,'agent'));
+    CREATE POLICY flow_members ON flows FOR ALL USING(is_account_member(account_id,'agent')) WITH CHECK(is_account_member(account_id,'agent'));
+    CREATE POLICY node_members ON flow_nodes FOR ALL USING(EXISTS(SELECT 1 FROM flows f WHERE f.id=flow_id));
+    CREATE TABLE account_invitations(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),account_id uuid REFERENCES accounts(id),token_hash text UNIQUE,role account_role_enum,created_by_user_id uuid,expires_at timestamptz,accepted_at timestamptz,accepted_by_user_id uuid,label text,created_at timestamptz DEFAULT now());
+    CREATE TABLE conversations(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),account_id uuid REFERENCES accounts(id),user_id uuid,contact_id uuid REFERENCES contacts(id));
+    CREATE TABLE messages(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),conversation_id uuid REFERENCES conversations(id));
+    CREATE TABLE flow_runs(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),account_id uuid REFERENCES accounts(id),contact_id uuid,status text,ended_at timestamptz,end_reason text);
+    ALTER TABLE whatsapp_config ADD COLUMN user_id uuid, ADD COLUMN waba_id text, ADD COLUMN connected_at timestamptz, ADD COLUMN subscribed_apps_at timestamptz, ADD COLUMN last_registration_error text, ADD COLUMN updated_at timestamptz DEFAULT now();
+    GRANT USAGE ON SCHEMA public,auth,storage TO authenticated,service_role;
+    GRANT ALL ON storage.objects TO authenticated,service_role;
+    GRANT ALL ON ALL TABLES IN SCHEMA public TO authenticated,service_role;
+  `;

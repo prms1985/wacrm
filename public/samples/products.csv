@@ -1,0 +1,3 @@
+name,sku,kind,category,description,specifications,image_url,unit,unit_price,currency,tax_rate,availability
+Office chair,CHAIR-001,product,Furniture,"Adjustable chair, black",Mesh back,,pcs,4500.00,INR,18,available
+Installation service,INSTALL-001,service,Services,On-site installation,,,hour,750.00,INR,18,on_request
