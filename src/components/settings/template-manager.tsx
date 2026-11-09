@@ -1194,7 +1194,12 @@ export function TemplateManager() {
                           <Input
                             aria-label={t('buttonLabelAria', { n: i + 1 })}
                             placeholder={t('btnLabelPlaceholder')}
-                            value={btn.text}
+                            value={
+                              btn.type === 'COPY_CODE'
+                                ? t('btnCopyCode')
+                                : btn.text
+                            }
+                            readOnly={btn.type === 'COPY_CODE'}
                             maxLength={TEMPLATE_LIMITS.buttonTextMaxLength}
                             onChange={(e) =>
                               updateButton(i, { text: e.target.value })
@@ -1283,6 +1288,7 @@ export function TemplateManager() {
                           <Input
                             placeholder={t('codePlaceholder')}
                             value={btn.example}
+                            maxLength={TEMPLATE_LIMITS.copyCodeMaxLength}
                             onChange={(e) =>
                               updateButton(i, { example: e.target.value })
                             }

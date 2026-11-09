@@ -248,6 +248,23 @@ describe('validateButtons', () => {
       validateButtons([{ type: 'COPY_CODE', text: 'Copy', example: '' }])
     ).toThrow(/missing example/);
   });
+  it('accepts COPY_CODE without an editable label', () => {
+    expect(() =>
+      validateButtons([{ type: 'COPY_CODE', text: '', example: 'END2026' }])
+    ).not.toThrow();
+  });
+  it('accepts a 15-character coupon and rejects a longer one', () => {
+    expect(() =>
+      validateButtons([
+        { type: 'COPY_CODE', text: '', example: 'A'.repeat(15) },
+      ])
+    ).not.toThrow();
+    expect(() =>
+      validateButtons([
+        { type: 'COPY_CODE', text: '', example: 'A'.repeat(16) },
+      ])
+    ).toThrow(/15/);
+  });
 });
 
 describe('validateSampleValues', () => {

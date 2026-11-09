@@ -29,10 +29,10 @@ export interface MetaComponent {
 
 interface MetaButtonPayload {
   type: 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER' | 'COPY_CODE';
-  text: string;
+  text?: string;
   url?: string;
   phone_number?: string;
-  example?: string[];
+  example?: string | string[];
 }
 
 function buildHeaderComponent(payload: TemplatePayload): MetaComponent | null {
@@ -109,7 +109,9 @@ function buildButtonPayload(b: TemplateButton): MetaButtonPayload {
           normalizeTemplatePhoneNumber(b.phone_number) ?? b.phone_number,
       };
     case 'COPY_CODE':
-      return { type: 'COPY_CODE', text: b.text, example: [b.example] };
+      // Meta supplies the caption. Coupon examples are scalar strings,
+      // unlike URL-button examples, which use an array.
+      return { type: 'COPY_CODE', example: b.example.trim() };
   }
 }
 

@@ -120,7 +120,9 @@ export function TemplatePreview({ form }: { form: TemplatePreviewProps }) {
               >
                 <Icon className="size-4 shrink-0" />
                 <span dir="auto" className="break-words">
-                  {button.text || t('btnLabelPlaceholder')}
+                  {button.type === 'COPY_CODE'
+                    ? t('btnCopyCode')
+                    : button.text || t('btnLabelPlaceholder')}
                 </span>
               </div>
             );

@@ -35,6 +35,7 @@ export const TEMPLATE_LIMITS = {
   maxUrlButtons: 2,
   maxPhoneButtons: 1,
   maxCopyCodeButtons: 1,
+  copyCodeMaxLength: 15,
   /** Meta: lowercase a-z, digits, underscore. Up to 512 chars. */
   nameRegex: /^[a-z0-9_]{1,512}$/,
 } as const;
@@ -269,10 +270,14 @@ export function validateButtons(buttons: TemplateButton[] | undefined): void {
 
   for (let i = 0; i < buttons.length; i++) {
     const b = buttons[i];
-    if (!b.text?.trim()) {
+    // COPY_CODE has a Meta-controlled caption, so its stored text is ignored.
+    if (b.type !== 'COPY_CODE' && !b.text?.trim()) {
       throw new Error(t('buttonMissingText', { n: i + 1, type: b.type }));
     }
-    if (b.text.length > TEMPLATE_LIMITS.buttonTextMaxLength) {
+    if (
+      b.type !== 'COPY_CODE' &&
+      b.text.length > TEMPLATE_LIMITS.buttonTextMaxLength
+    ) {
       throw new Error(
         t('buttonTextTooLong', {
           n: i + 1,
@@ -319,6 +324,14 @@ export function validateButtons(buttons: TemplateButton[] | undefined): void {
       case 'COPY_CODE':
         if (!b.example?.trim()) {
           throw new Error(t('copyCodeButtonMissingExample', { n: i + 1 }));
+        }
+        if (b.example.trim().length > TEMPLATE_LIMITS.copyCodeMaxLength) {
+          throw new Error(
+            t('copyCodeButtonTooLong', {
+              n: i + 1,
+              max: TEMPLATE_LIMITS.copyCodeMaxLength,
+            })
+          );
         }
         break;
     }

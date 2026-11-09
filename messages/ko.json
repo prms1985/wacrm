@@ -2829,6 +2829,7 @@
       "urlButtonNeedsExample": "URL 버튼 #{n}이(가) {var}을(를) 사용합니다 — Meta는 예시 값을 요구합니다.",
       "phoneButtonMissingNumber": "PHONE_NUMBER 버튼 #{n}에 phone_number가 없습니다.",
       "copyCodeButtonMissingExample": "COPY_CODE 버튼 #{n}에 예시 값이 없습니다.",
+      "copyCodeButtonTooLong": "COPY_CODE 버튼 #{n}의 예시 코드가 {max}자를 초과합니다.",
       "bodySampleCountMismatch": "본문에 변수가 {count}개 있습니다 — 샘플 값을 정확히 {count}개 입력하세요(현재 {got}개).",
       "headerSampleCountMismatch": "헤더에 변수가 {count}개 있습니다 — 샘플 값을 정확히 {count}개 입력하세요(현재 {got}개).",
       "bodySampleEmpty": "본문 샘플 값 #{n}이(가) 비어 있습니다.",

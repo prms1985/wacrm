@@ -2829,6 +2829,7 @@
       "urlButtonNeedsExample": "O botão URL #{n} usa {var} — a Meta exige um valor de exemplo.",
       "phoneButtonMissingNumber": "O botão PHONE_NUMBER #{n} está sem phone_number.",
       "copyCodeButtonMissingExample": "O botão COPY_CODE #{n} está sem valor de exemplo.",
+      "copyCodeButtonTooLong": "O código de exemplo do botão COPY_CODE nº {n} excede {max} caracteres.",
       "bodySampleCountMismatch": "O corpo tem {count} variável(is) — informe exatamente {count} valor(es) de exemplo (recebidos: {got}).",
       "headerSampleCountMismatch": "O cabeçalho tem {count} variável(is) — informe exatamente {count} valor(es) de exemplo (recebidos: {got}).",
       "bodySampleEmpty": "O valor de exemplo #{n} do corpo está vazio.",

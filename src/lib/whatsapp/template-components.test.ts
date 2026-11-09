@@ -137,8 +137,21 @@ describe('buildMetaTemplatePayload', () => {
       { type: 'QUICK_REPLY', text: 'Yes' },
       { type: 'URL', text: 'Track', url: 'https://x/{{1}}', example: ['abc'] },
       { type: 'PHONE_NUMBER', text: 'Call', phone_number: '+15551234567' },
-      { type: 'COPY_CODE', text: 'Copy', example: ['SUMMER20'] },
+      { type: 'COPY_CODE', example: 'SUMMER20' },
     ]);
+  });
+
+  it('submits a coupon code as a string and omits legacy custom button labels', () => {
+    const payload = buildMetaTemplatePayload({
+      ...base,
+      category: 'Marketing',
+      buttons: [{ type: 'COPY_CODE', text: 'END2026', example: ' END2026 ' }],
+    });
+    const button = payload.components.find((c) => c.type === 'BUTTONS')
+      ?.buttons?.[0];
+    expect(button).toEqual({ type: 'COPY_CODE', example: 'END2026' });
+    expect(button).not.toHaveProperty('text');
+    expect(Array.isArray(button?.example)).toBe(false);
   });
 
   it('orders components HEADER → BODY → FOOTER → BUTTONS', () => {

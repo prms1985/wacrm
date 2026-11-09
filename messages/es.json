@@ -2829,6 +2829,7 @@
       "urlButtonNeedsExample": "El botón URL #{n} usa {var}; Meta requiere un valor de ejemplo.",
       "phoneButtonMissingNumber": "Al botón PHONE_NUMBER #{n} le falta phone_number.",
       "copyCodeButtonMissingExample": "Al botón COPY_CODE #{n} le falta el valor de ejemplo.",
+      "copyCodeButtonTooLong": "El código de ejemplo del botón COPY_CODE n.º {n} supera los {max} caracteres.",
       "bodySampleCountMismatch": "El cuerpo tiene {count} variable(s); proporciona exactamente {count} valor(es) de ejemplo (recibidos: {got}).",
       "headerSampleCountMismatch": "El encabezado tiene {count} variable(s); proporciona exactamente {count} valor(es) de ejemplo (recibidos: {got}).",
       "bodySampleEmpty": "El valor de ejemplo #{n} del cuerpo está vacío.",
