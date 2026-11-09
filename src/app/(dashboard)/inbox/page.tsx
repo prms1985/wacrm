@@ -181,43 +181,32 @@ function InboxPageInner() {
 
   // Check WhatsApp connection status on mount
   useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
     const checkConnection = async () => {
-      const supabase = createClient();
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      const user = session?.user;
-
-      if (!user) return;
-
-      // whatsapp_config is one-row-per-account post-multi-user, so
-      // the previous `.eq('user_id', user.id)` would miss the row
-      // for any teammate who didn't personally save the config —
-      // the "WhatsApp not connected" banner would show in the
-      // shared inbox even though the admin had it configured.
-      // Resolve account_id via the profile and query by that.
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("account_id")
-        .eq("user_id", user.id)
-        .maybeSingle();
-      const accountId = profile?.account_id as string | undefined;
-      if (!accountId) {
-        setWhatsappConnected(false);
-        return;
+      try {
+        // Credential-table access is server-only after migration 067.
+        // The metadata endpoint authorizes and scopes the current workspace.
+        const response = await fetch("/api/whatsapp/config/metadata", {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error("Connection status unavailable");
+        const { config } = await response.json();
+        if (active) setWhatsappConnected(config?.status === "connected");
+      } catch {
+        if (!controller.signal.aborted) {
+          console.error("Could not check WhatsApp connection status");
+        }
       }
-
-      const { data } = await supabase
-        .from("whatsapp_config")
-        .select("status")
-        .eq("account_id", accountId)
-        .maybeSingle();
-
-      setWhatsappConnected(data?.status === "connected");
     };
 
-    checkConnection();
-  }, []);
+    void checkConnection();
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [resyncToken]);
 
   // Handle realtime message events
   const handleMessageEvent = useCallback(
