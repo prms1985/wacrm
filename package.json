@@ -32,6 +32,7 @@
     "managed:prepare-setup": "node scripts/prepare-managed-setup.mjs",
     "dev": "next dev",
     "build": "next build",
+    "deploy:cloudflare": "npx wrangler deploy --keep-vars --var META_APP_ID:1149900210906534 --var META_WHATSAPP_CONFIG_ID:1061330360328985",
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",

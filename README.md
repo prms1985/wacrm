@@ -166,6 +166,7 @@ Key pages:
 - [WhatsApp setup](https://wacrm.tech/docs/whatsapp-setup)
 - [Environment variables](https://wacrm.tech/docs/environment-variables)
 - [Deploy on Hostinger](https://wacrm.tech/docs/deployment-hostinger)
+- [Deploy on Cloudflare Workers](./docs/cloudflare.md)
 - [Architecture](https://wacrm.tech/docs/architecture)
 - [Troubleshooting](https://wacrm.tech/docs/troubleshooting)
 - [WhatsApp connection troubleshooting](./docs/whatsapp-connection-troubleshooting.md)
