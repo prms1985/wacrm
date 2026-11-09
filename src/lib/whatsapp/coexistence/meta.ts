@@ -12,16 +12,26 @@ export class CoexistenceError extends Error {
 export function coexistenceSetup() {
   const appId = process.env.META_APP_ID?.trim() ?? '';
   const configId = process.env.META_WHATSAPP_CONFIG_ID?.trim() ?? '';
-  const secret =
-    process.env.META_COEXISTENCE_APP_SECRET?.trim() ||
-    process.env.META_APP_SECRET?.trim() ||
-    '';
+  const dedicatedSecret = process.env.META_COEXISTENCE_APP_SECRET?.trim() ?? '';
+  const appSecret = process.env.META_APP_SECRET?.trim() ?? '';
+  const secret = dedicatedSecret || appSecret;
+  const secretVariable =
+    dedicatedSecret || appSecret.includes(',')
+      ? 'META_COEXISTENCE_APP_SECRET'
+      : 'META_APP_SECRET';
+  // Copying the example env file must not enable a flow that cannot exchange
+  // the authorization code. Report the variable the administrator must set.
+  const exampleSecret = [
+    'your-meta-app-secret',
+    'your-app-secret',
+    'the-secret-for-meta_app_id',
+  ].includes(secret.toLowerCase());
   const verifyToken = process.env.META_WEBHOOK_VERIFY_TOKEN?.trim() ?? '';
   const version = process.env.META_GRAPH_API_VERSION?.trim() || 'v24.0';
   const missing = [
     !/^\d+$/.test(appId) && 'META_APP_ID',
     !/^\d+$/.test(configId) && 'META_WHATSAPP_CONFIG_ID',
-    (!secret || secret.includes(',')) && 'META_COEXISTENCE_APP_SECRET',
+    (!secret || secret.includes(',') || exampleSecret) && secretVariable,
     !verifyToken && 'META_WEBHOOK_VERIFY_TOKEN',
     !/^v\d+\.0$/.test(version) && 'META_GRAPH_API_VERSION',
   ].filter((s): s is string => typeof s === 'string');

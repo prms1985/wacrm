@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  coexistenceSetup,
   exchangeCoexistenceCode,
   findCoexistencePhone,
   requestCoexistenceSync,
@@ -12,11 +13,52 @@ beforeEach(() => {
   vi.stubGlobal('fetch', fetchMock);
   vi.stubEnv('META_APP_ID', '1234');
   vi.stubEnv('META_APP_SECRET', 'secret');
+  vi.stubEnv('META_COEXISTENCE_APP_SECRET', '');
+  vi.stubEnv('META_WHATSAPP_CONFIG_ID', '456');
+  vi.stubEnv('META_WEBHOOK_VERIFY_TOKEN', 'verify');
   vi.stubEnv('META_GRAPH_API_VERSION', 'v24.0');
 });
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
+});
+
+describe('Coexistence setup', () => {
+  it('uses the Embedded Signup configuration separately from the Meta App ID', () => {
+    expect(coexistenceSetup()).toMatchObject({
+      ready: true,
+      appId: '1234',
+      configId: '456',
+      missing: [],
+    });
+  });
+
+  it.each(['', 'your-meta-app-secret', 'your-app-secret'])(
+    'keeps signup disabled for an unset or example app secret (%s)',
+    (secret) => {
+      vi.stubEnv('META_APP_SECRET', secret);
+      expect(coexistenceSetup()).toMatchObject({
+        ready: false,
+        missing: ['META_APP_SECRET'],
+      });
+    }
+  );
+
+  it('requires a dedicated secret when webhooks accept several Meta app secrets', () => {
+    vi.stubEnv('META_APP_SECRET', 'one,two');
+    expect(coexistenceSetup()).toMatchObject({
+      ready: false,
+      missing: ['META_COEXISTENCE_APP_SECRET'],
+    });
+    vi.stubEnv('META_COEXISTENCE_APP_SECRET', 'the-secret-for-META_APP_ID');
+    expect(coexistenceSetup().ready).toBe(false);
+    vi.stubEnv('META_COEXISTENCE_APP_SECRET', 'actual-dedicated-secret');
+    expect(coexistenceSetup()).toMatchObject({
+      ready: true,
+      secret: 'actual-dedicated-secret',
+      missing: [],
+    });
+  });
 });
 
 describe('Coexistence Graph requests', () => {

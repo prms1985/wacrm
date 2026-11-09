@@ -177,6 +177,9 @@ Key pages:
   confirmation and password-reset links come back to *your* domain
   instead of `localhost:3000`, and how `/auth/callback` handles them
 
+- [Connect WhatsApp Business](./docs/whatsapp-coexistence.md) — configure
+  Facebook Login for Business and WhatsApp Embedded Signup
+
 ## Stack
 
 - **App** — Next.js 16 (App Router), React 19, TypeScript, Tailwind v4.

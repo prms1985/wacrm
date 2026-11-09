@@ -45,6 +45,35 @@ the business number's eligibility. Installing this code does not grant Meta acce
 
 ## Connecting a business
 
+The **Connect WhatsApp Business** button is already implemented in Settings.
+It loads Meta's JavaScript SDK and calls `FB.login` with:
+
+```javascript
+{
+  config_id: '<META_WHATSAPP_CONFIG_ID>',
+  response_type: 'code',
+  override_default_response_type: true,
+  extras: {
+    setup: {},
+    featureType: 'whatsapp_business_app_onboarding',
+    sessionInfoVersion: '3',
+  },
+}
+```
+
+`META_APP_ID` identifies the Meta app; `META_WHATSAPP_CONFIG_ID` identifies
+its **WhatsApp Embedded Signup** configuration. Configure that variation
+in **Facebook Login for Business → Configurations** for Business app onboarding.
+The customer selects their business/WABA and existing WhatsApp Business app
+number in Meta's flow. A Facebook login status alone does not establish a
+WhatsApp connection: the app waits for both the authorization code and the
+`WA_EMBEDDED_SIGNUP` completion event, then validates and saves them server-side.
+
+Use `/settings?tab=whatsapp` to open the connection screen. Example app secrets
+keep the button disabled until the administrator replaces them. Meta App
+Secrets remain server-side; the client receives only the App ID, Configuration
+ID, API version and setup status.
+
 An account owner/admin opens **Settings → WhatsApp → Connect WhatsApp Business**.
 Meta opens its signup flow and requests approval on the phone. The customer
 decides whether to share supported history. AiBA receives an authorization code,
